@@ -173,50 +173,51 @@ is_command() {
     command -v "${check_command}" >/dev/null 2>&1
 }
 
+# OS check function
 os_check() {
     if [ "$PIHOLE_SKIP_OS_CHECK" != true ]; then
-        # This function gets a list of supported OS versions from a TXT record at versions.pi-hole.net
-        # and determines whether or not the script is running on one of those systems
         local remote_os_domain valid_os valid_version valid_response detected_os detected_version display_warning cmdResult digReturnCode response
         remote_os_domain=${OS_CHECK_DOMAIN_NAME:-"versions.pi-hole.net"}
 
         detected_os=$(grep '^ID=' /etc/os-release | cut -d '=' -f2 | tr -d '"')
         detected_version=$(grep VERSION_ID /etc/os-release | cut -d '=' -f2 | tr -d '"')
 
-        cmdResult="$(dig +short -t txt "${remote_os_domain}" @ns1.pi-hole.net 2>&1; echo $?)"
-        # Gets the return code of the previous command (last line)
-        digReturnCode="${cmdResult##*$'\n'}"
-
-        if [ ! "${digReturnCode}" == "0" ]; then
-            valid_response=false
+        if [[ "$detected_os" == "alpine" ]]; then
+            valid_os=true
+            valid_version=true
+            display_warning=false
         else
-            # Dig returned 0 (success), so get the actual response, and loop through it to determine if the detected variables above are valid
-            response="${cmdResult%%$'\n'*}"
-            # If the value of ${response} is a single 0, then this is the return code, not an actual response.
-            if [ "${response}" == 0 ]; then
+            cmdResult="$(dig +short -t txt "${remote_os_domain}" @ns1.pi-hole.net 2>&1; echo $?)"
+            digReturnCode="${cmdResult##*$'\n'}"
+
+            if [ ! "${digReturnCode}" == "0" ]; then
                 valid_response=false
-            fi
-
-            IFS=" " read -r -a supportedOS < <(echo "${response}" | tr -d '"')
-            for distro_and_versions in "${supportedOS[@]}"
-            do
-                distro_part="${distro_and_versions%%=*}"
-                versions_part="${distro_and_versions##*=}"
-
-                # If the distro part is a (case-insensitive) substring of the computer OS
-                if [[ "${detected_os^^}" =~ ${distro_part^^} ]]; then
-                    valid_os=true
-                    IFS="," read -r -a supportedVer <<<"${versions_part}"
-                    for version in "${supportedVer[@]}"
-                    do
-                        if [[ "${detected_version}" =~ $version ]]; then
-                            valid_version=true
-                            break
-                        fi
-                    done
-                    break
+            else
+                response="${cmdResult%%$'\n'*}"
+                if [ "${response}" == 0 ]; then
+                    valid_response=false
                 fi
-            done
+
+                IFS=" " read -r -a supportedOS < <(echo "${response}" | tr -d '"')
+                for distro_and_versions in "${supportedOS[@]}"
+                do
+                    distro_part="${distro_and_versions%%=*}"
+                    versions_part="${distro_and_versions##*=}"
+
+                    if [[ "${detected_os^^}" =~ ${distro_part^^} ]]; then
+                        valid_os=true
+                        IFS="," read -r -a supportedVer <<<"${versions_part}"
+                        for version in "${supportedVer[@]}"
+                        do
+                            if [[ "${detected_version}" =~ $version ]]; then
+                                valid_version=true
+                                break
+                            fi
+                        done
+                        break
+                    fi
+                done
+            fi
         fi
 
         if [ "$valid_os" = true ] && [ "$valid_version" = true ] && [ ! "$valid_response" = false ]; then
@@ -224,69 +225,39 @@ os_check() {
         fi
 
         if [ "$display_warning" != false ]; then
-            if [ "$valid_response" = false ]; then
-
-                if [ "${digReturnCode}" -eq 0 ]; then
-                    errStr="dig succeeded, but response was blank. Please contact support"
-                else
-                    errStr="dig failed with return code ${digReturnCode}"
-                fi
-                printf "  %b %bRetrieval of supported OS list failed. %s. %b\\n" "${CROSS}" "${COL_LIGHT_RED}" "${errStr}" "${COL_NC}"
-                printf "      %bUnable to determine if the detected OS (%s %s) is supported%b\\n" "${COL_LIGHT_RED}" "${detected_os^}" "${detected_version}" "${COL_NC}"
-                printf "      Possible causes for this include:\\n"
-                printf "        - Firewall blocking certain DNS lookups from Pi-hole device\\n"
-                printf "        - ns1.pi-hole.net being blocked (required to obtain TXT record from versions.pi-hole.net containing supported operating systems)\\n"
-                printf "        - Other internet connectivity issues\\n"
-            else
-                printf "  %b %bUnsupported OS detected: %s %s%b\\n" "${CROSS}" "${COL_LIGHT_RED}" "${detected_os^}" "${detected_version}" "${COL_NC}"
-                printf "      If you are seeing this message and you do have a supported OS, please contact support.\\n"
-            fi
-            printf "\\n"
-            printf "      %bhttps://docs.pi-hole.net/main/prerequisites/#supported-operating-systems%b\\n" "${COL_LIGHT_GREEN}" "${COL_NC}"
-            printf "\\n"
-            printf "      If you wish to attempt to continue anyway, you can try one of the following commands to skip this check:\\n"
-            printf "\\n"
-            printf "      e.g: If you are seeing this message on a fresh install, you can run:\\n"
-            printf "             %bcurl -sSL https://install.pi-hole.net | sudo PIHOLE_SKIP_OS_CHECK=true bash%b\\n" "${COL_LIGHT_GREEN}" "${COL_NC}"
-            printf "\\n"
-            printf "           If you are seeing this message after having run pihole -up:\\n"
-            printf "             %bsudo PIHOLE_SKIP_OS_CHECK=true pihole -r%b\\n" "${COL_LIGHT_GREEN}" "${COL_NC}"
-            printf "           (In this case, your previous run of pihole -up will have already updated the local repository)\\n"
-            printf "\\n"
-            printf "      It is possible that the installation will still fail at this stage due to an unsupported configuration.\\n"
-            printf "      If that is the case, you can feel free to ask the community on Discourse with the %bCommunity Help%b category:\\n" "${COL_LIGHT_RED}" "${COL_NC}"
-            printf "      %bhttps://discourse.pi-hole.net/c/bugs-problems-issues/community-help/%b\\n" "${COL_LIGHT_GREEN}" "${COL_NC}"
-            printf "\\n"
+            printf "  %b %bUnsupported OS detected: %s %s%b\n" "${CROSS}" "${COL_LIGHT_RED}" "${detected_os^}" "${detected_version}" "${COL_NC}"
             exit 1
-
         else
-            printf "  %b %bSupported OS detected%b\\n" "${TICK}" "${COL_LIGHT_GREEN}" "${COL_NC}"
+            printf "  %b %bSupported OS detected%b\n" "${TICK}" "${COL_LIGHT_GREEN}" "${COL_NC}"
         fi
     else
-        printf "  %b %bPIHOLE_SKIP_OS_CHECK env variable set to true - installer will continue%b\\n" "${INFO}" "${COL_LIGHT_GREEN}" "${COL_NC}"
+        printf "  %b %bPIHOLE_SKIP_OS_CHECK env variable set to true - installer will continue%b\n" "${INFO}" "${COL_LIGHT_GREEN}" "${COL_NC}"
     fi
 }
 
-# This function waits for dpkg to unlock, which signals that the previous apt-get command has finished.
-test_dpkg_lock() {
+# This function waits for the package manager to finish, which signals that the previous package command has completed.
+test_pkg_lock() {
     i=0
-    printf "  %b Waiting for package manager to finish (up to 30 seconds)\\n" "${INFO}"
-    # fuser is a program to show which processes use the named files, sockets, or filesystems
-    # So while the lock is held,
-    while fuser /var/lib/dpkg/lock >/dev/null 2>&1
+    printf "  %b Waiting for package manager to finish (up to 30 seconds)\n" "${INFO}"
+    if is_command dpkg; then
+        LOCK_FILE="/var/lib/dpkg/lock"
+    elif is_command apk; then
+        LOCK_FILE="/lib/apk/db/lock"
+    else
+        printf "  %b No supported package manager found\n" "${CROSS}"
+        exit 1
+    fi
+    # Check for the lock file
+    while fuser "$LOCK_FILE" >/dev/null 2>&1
     do
-        # we wait half a second,
         sleep 0.5
-        # increase the iterator,
         ((i=i+1))
-        # exit if waiting for more then 30 seconds
         if [[ $i -gt 60 ]]; then
-            printf "  %b %bError: Could not verify package manager finished and released lock. %b\\n" "${CROSS}" "${COL_LIGHT_RED}" "${COL_NC}"
-            printf "       Attempt to install packages manually and retry.\\n"
+            printf "  %b %bError: Could not verify package manager finished and released lock. %b\n" "${CROSS}" "${COL_LIGHT_RED}" "${COL_NC}"
+            printf "       Attempt to install packages manually and retry.\n"
             exit 1;
         fi
     done
-    # and then report success once dpkg is unlocked.
     return 0
 }
 
